@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "freee-hr": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\mugen\\IdeaProjects\\freee-hr-mcp",
+        "python",
+        "C:\\Users\\mugen\\IdeaProjects\\freee-hr-mcp\\server.py"
+      ],
+      "env": {
+        "FREEE_CLIENT_ID": "ここにclient_idを貼る",
+        "FREEE_CLIENT_SECRET": "ここにclient_secretを貼る"
+      }
+    }
+  }
+}
