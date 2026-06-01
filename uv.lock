@@ -403,6 +403,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "jpholiday" },
     { name = "python-dotenv" },
 ]
 
@@ -410,6 +411,7 @@ dependencies = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "jpholiday", specifier = ">=1.0.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
 
@@ -544,6 +546,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/dc/5f768c2e391e9afabe5d18e3221346deb5fb6338565f1ccc9e7c6d7befdd/joserfc-1.6.5.tar.gz", hash = "sha256:1482a7db78fb4602e44ed89e51b599d052e091288c7c532c5b694e20149dec48", size = 231881, upload-time = "2026-05-06T04:58:13.408Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/3b/ad1cb22e75c963b1f07c8a2329bf47227ce7e4361df5eb2fb101b2ce33ef/joserfc-1.6.5-py3-none-any.whl", hash = "sha256:e9878a0f8243fe7b95e11fdda81374ca9f7a689e302751579d3dfdeec559675e", size = 70464, upload-time = "2026-05-06T04:58:11.668Z" },
+]
+
+[[package]]
+name = "jpholiday"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/0c/1178e0d55e66362c6f2e715aa1665b032be71bf9b9c80a9fe83238d33c81/jpholiday-1.0.3.tar.gz", hash = "sha256:d5a56592fd6a7ceb76d49e1c5f1af806223e0d5d6b9e3bc5477860e6605f4cab", size = 12575, upload-time = "2025-12-26T05:28:11.767Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/e9/af0b8cda67530d7ff3d937b785c7901041e38a955b6b66e3c9a23a0d2027/jpholiday-1.0.3-py3-none-any.whl", hash = "sha256:abe5f0191f27a88623a33aaaa7cd04035886b5d7adb41a42eaeba0e721dc1982", size = 16257, upload-time = "2025-12-26T05:28:10.489Z" },
 ]
 
 [[package]]

@@ -3,13 +3,15 @@ freee人事労務 MCP サーバー
 勤怠の参照・打刻を Claude Desktop から操作できるようにする
 """
 
+import calendar
 import json
 import os
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import jpholiday
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -127,6 +129,30 @@ def _add_minutes(time_str: str, minutes: int) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def _is_paid_holiday(wr: dict) -> bool:
+    """
+    有給休暇取得済みかどうかを判定する。
+
+    判定ロジック（2段階）:
+    1. paid_holiday フィールド（float: 1.0=全休, 0.5=半休）
+    2. paid_holidays 配列の days/mins いずれかが 0 より大きい
+    また時間単位有給（half_paid_holiday_mins）も考慮する。
+    """
+    # ── アプローチ1: paid_holiday / half_paid_holiday_mins で判定 ──
+    paid_holiday = wr.get("paid_holiday") or 0          # float: 1.0=全休, 0.5=半休
+    half_paid_holiday_mins = wr.get("half_paid_holiday_mins") or 0  # 時間単位有給（分）
+
+    if paid_holiday > 0 or half_paid_holiday_mins > 0:
+        return True
+
+    # ── アプローチ2: paid_holidays 配列で判定（より厳密） ──
+    paid_holidays = wr.get("paid_holidays") or []
+    if any(ph.get("days", 0) > 0 or ph.get("mins", 0) > 0 for ph in paid_holidays):
+        return True
+
+    return False
+
+
 # ── MCP ツール ───────────────────────────────────────
 
 @mcp.tool()
@@ -199,7 +225,9 @@ async def get_work_record(employee_id: int, company_id: int, target_date: str) -
         f"  出勤: {clock_in}\n"
         f"  退勤: {clock_out}\n"
         f"  勤務時間: {wr.get('total_work_mins', 0)} 分\n"
-        f"  残業時間: {wr.get('overtime_work_mins', 0)} 分"
+        f"  残業時間: {wr.get('overtime_work_mins', 0)} 分\n\n"
+        f"【RAW レスポンス（フィールド確認用）】\n"
+        f"{json.dumps(data, ensure_ascii=False, indent=2)}"
     )
 
 
@@ -280,6 +308,77 @@ async def get_work_records_month(
         f"  総勤務時間: {total // 60}時間{total % 60}分\n"
         f"  総残業時間: {overtime // 60}時間{overtime % 60}分"
     )
+
+
+@mcp.tool()
+async def check_monthly_attendance(
+    employee_id: int,
+    company_id: int,
+    year: int,
+    month: int,
+) -> str:
+    """
+    指定月の営業日ごとに勤怠を確認し、未打刻・未申請の日を警告する。
+
+    Args:
+        employee_id: 従業員ID
+        company_id: 事業所ID
+        year: 年（例: 2026）
+        month: 月（例: 5）
+    """
+    num_days = calendar.monthrange(year, month)[1]
+    business_days = [
+        date(year, month, d)
+        for d in range(1, num_days + 1)
+        if date(year, month, d).weekday() < 5
+        and not jpholiday.is_holiday(date(year, month, d))
+    ]
+
+    warnings: list[str] = []
+    ok_count = 0
+    paid_count = 0
+    errors: list[str] = []
+
+    for day in business_days:
+        date_str = day.isoformat()
+        try:
+            data = await hr_get(
+                f"/api/v1/employees/{employee_id}/work_records/{date_str}",
+                params={"company_id": company_id},
+            )
+            wr = data.get("work_record", data)
+            clock_in = wr.get("clock_in_at")
+
+            # ── 修正箇所: 正しいフィールド名で有給判定 ──
+            is_paid = _is_paid_holiday(wr)
+
+            if clock_in is None and not is_paid:
+                warnings.append(date_str)
+            elif is_paid:
+                paid_count += 1
+            else:
+                ok_count += 1
+
+        except Exception as e:
+            errors.append(f"{date_str}: {e}")
+
+    lines = [f"【{year}年{month}月 勤怠チェック結果】"]
+    lines.append(f"  営業日数: {len(business_days)} 日")
+    lines.append(f"  打刻あり: {ok_count} 日")
+    lines.append(f"  有給休暇: {paid_count} 日")
+    lines.append(f"  ⚠️ 未打刻（要確認）: {len(warnings)} 日")
+
+    if warnings:
+        lines.append("\n【未打刻日一覧】")
+        for d in warnings:
+            lines.append(f"  ⚠️ {d}")
+
+    if errors:
+        lines.append("\n【取得エラー】")
+        for e in errors:
+            lines.append(f"  ❌ {e}")
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
