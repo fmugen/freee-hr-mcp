@@ -1,6 +1,6 @@
 """
 freee人事労務 MCP サーバー
-勤怠の参照・打刻を Claude Desktop から操作できるようにする
+勤怠の参照・打刻・休暇登録を Claude Desktop から操作できるようにする
 """
 
 import calendar
@@ -138,14 +138,12 @@ def _is_paid_holiday(wr: dict) -> bool:
     2. paid_holidays 配列の days/mins いずれかが 0 より大きい
     また時間単位有給（half_paid_holiday_mins）も考慮する。
     """
-    # ── アプローチ1: paid_holiday / half_paid_holiday_mins で判定 ──
-    paid_holiday = wr.get("paid_holiday") or 0          # float: 1.0=全休, 0.5=半休
-    half_paid_holiday_mins = wr.get("half_paid_holiday_mins") or 0  # 時間単位有給（分）
+    paid_holiday = wr.get("paid_holiday") or 0
+    half_paid_holiday_mins = wr.get("half_paid_holiday_mins") or 0
 
     if paid_holiday > 0 or half_paid_holiday_mins > 0:
         return True
 
-    # ── アプローチ2: paid_holidays 配列で判定（より厳密） ──
     paid_holidays = wr.get("paid_holidays") or []
     if any(ph.get("days", 0) > 0 or ph.get("mins", 0) > 0 for ph in paid_holidays):
         return True
@@ -251,12 +249,8 @@ async def update_work_record(
         clock_out_at: 退勤時刻（例: 18:00）
         break_mins: 休憩時間（分）デフォルト60分
     """
-    # freee API の要求フォーマット: "YYYY-MM-DD HH:MM:SS"（Tなし・タイムゾーンなし）
     clock_in = f"{target_date} {clock_in_at}:00"
     clock_out = f"{target_date} {clock_out_at}:00"
-
-    break_start = f"{target_date} 12:00:00"
-    break_end = f"{target_date} {_add_minutes('12:00', break_mins)}:00"
 
     body = {
         "company_id": company_id,
@@ -348,8 +342,6 @@ async def check_monthly_attendance(
             )
             wr = data.get("work_record", data)
             clock_in = wr.get("clock_in_at")
-
-            # ── 修正箇所: 正しいフィールド名で有給判定 ──
             is_paid = _is_paid_holiday(wr)
 
             if clock_in is None and not is_paid:
@@ -379,6 +371,232 @@ async def check_monthly_attendance(
             lines.append(f"  ❌ {e}")
 
     return "\n".join(lines)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 休暇登録ツール
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@mcp.tool()
+async def set_paid_holiday(
+    employee_id: int,
+    company_id: int,
+    target_date: str,
+    holiday_type: str = "full",
+    clock_in_at: str | None = None,
+    clock_out_at: str | None = None,
+    break_mins: int = 0,
+) -> str:
+    """
+    有給休暇を登録する。
+
+    Args:
+        employee_id: 従業員ID
+        company_id: 事業所ID
+        target_date: 対象日（例: 2026-06-09）
+        holiday_type: "full"=全休 / "am_half"=午前半休 / "pm_half"=午後半休
+        clock_in_at: 半休時の出勤時刻（例: "13:00"）。全休時は不要
+        clock_out_at: 半休時の退勤時刻（例: "18:00"）。全休時は不要
+        break_mins: 休憩時間（分）。半休時は通常0
+    """
+    if holiday_type == "full":
+        body = {
+            "company_id": company_id,
+            "paid_holiday": 1,
+        }
+        label = "全休"
+
+    elif holiday_type in ("am_half", "pm_half"):
+        if not clock_in_at or not clock_out_at:
+            return "❌ 半休の場合は clock_in_at と clock_out_at を指定してください。"
+
+        # 所定労働時間の半分 = 240分（8h勤務前提）
+        body = {
+            "company_id": company_id,
+            "half_paid_holiday_mins": 240,
+            "clock_in_at": f"{target_date} {clock_in_at}:00",
+            "clock_out_at": f"{target_date} {clock_out_at}:00",
+        }
+        if break_mins > 0:
+            body["break_records"] = [{"break_mins": break_mins}]
+
+        label = "午前半休" if holiday_type == "am_half" else "午後半休"
+
+    else:
+        return f"❌ holiday_type が不正です: '{holiday_type}'（full / am_half / pm_half）"
+
+    try:
+        await hr_put(
+            f"/api/v1/employees/{employee_id}/work_records/{target_date}",
+            body,
+        )
+        result = f"✅ {target_date} の有給休暇（{label}）を登録しました"
+        if clock_in_at:
+            result += f"\n  出勤: {clock_in_at}  退勤: {clock_out_at}"
+        else:
+            result += "\n  終日休暇"
+        return result
+    except Exception as e:
+        return f"❌ 登録失敗: {e}"
+
+
+@mcp.tool()
+async def set_hourly_paid_holiday(
+    employee_id: int,
+    company_id: int,
+    target_date: str,
+    hourly_paid_holiday_mins: int,
+    clock_in_at: str | None = None,
+    clock_out_at: str | None = None,
+    break_mins: int = 60,
+) -> str:
+    """
+    有給休暇（時間休）を登録する。
+
+    Args:
+        employee_id: 従業員ID
+        company_id: 事業所ID
+        target_date: 対象日（例: 2026-06-09）
+        hourly_paid_holiday_mins: 時間休の取得分数（例: 120 = 2時間）
+        clock_in_at: 出勤時刻（例: "09:00"）
+        clock_out_at: 退勤時刻（例: "17:00"）
+        break_mins: 休憩時間（分）デフォルト60分
+    """
+    body: dict = {
+        "company_id": company_id,
+        "hourly_paid_holiday_mins": hourly_paid_holiday_mins,
+    }
+    if clock_in_at:
+        body["clock_in_at"] = f"{target_date} {clock_in_at}:00"
+    if clock_out_at:
+        body["clock_out_at"] = f"{target_date} {clock_out_at}:00"
+    if break_mins > 0:
+        body["break_records"] = [{"break_mins": break_mins}]
+
+    try:
+        await hr_put(
+            f"/api/v1/employees/{employee_id}/work_records/{target_date}",
+            body,
+        )
+        h, m = divmod(hourly_paid_holiday_mins, 60)
+        result = f"✅ {target_date} の有給時間休（{h}時間{m}分）を登録しました"
+        if clock_in_at:
+            result += f"\n  出勤: {clock_in_at}  退勤: {clock_out_at}"
+        return result
+    except Exception as e:
+        return f"❌ 登録失敗: {e}"
+
+
+@mcp.tool()
+async def get_holiday_settings(
+    employee_id: int,
+    company_id: int,
+) -> str:
+    """
+    従業員に付与されている特別休暇の設定一覧を取得する。
+    set_special_holiday で使う special_holiday_setting_id を確認するために使う。
+
+    Args:
+        employee_id: 従業員ID
+        company_id: 事業所ID
+    """
+    try:
+        data = await hr_get(
+            f"/api/v1/employees/{employee_id}/special_holidays",
+            params={"company_id": company_id},
+        )
+        items = data.get("special_holidays", [])
+        if not items:
+            return "特別休暇設定が見つかりませんでした。"
+
+        lines = ["【特別休暇設定一覧】"]
+        for item in items:
+            lines.append(
+                f"  ID={item.get('id')}  "
+                f"名称={item.get('name')}  "
+                f"残日数={item.get('remaining_days', '?')}日"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ 取得失敗: {e}"
+
+
+@mcp.tool()
+async def set_special_holiday(
+    employee_id: int,
+    company_id: int,
+    target_date: str,
+    special_holiday_setting_id: int,
+    holiday_type: str = "full",
+    half_special_holiday_mins: int = 240,
+    hourly_special_holiday_mins: int = 0,
+    clock_in_at: str | None = None,
+    clock_out_at: str | None = None,
+    break_mins: int = 0,
+) -> str:
+    """
+    特別休暇を登録する。
+    事前に get_holiday_settings で special_holiday_setting_id を確認すること。
+
+    Args:
+        employee_id: 従業員ID
+        company_id: 事業所ID
+        target_date: 対象日（例: 2026-06-09）
+        special_holiday_setting_id: 特別休暇設定ID（get_holiday_settings で確認）
+        holiday_type: "full"=全休 / "half"=半休 / "hourly"=時間休
+        half_special_holiday_mins: 半休の場合の分数（デフォルト240）
+        hourly_special_holiday_mins: 時間休の場合の分数
+        clock_in_at: 半休・時間休時の出勤時刻（例: "13:00"）
+        clock_out_at: 半休・時間休時の退勤時刻（例: "18:00"）
+        break_mins: 休憩時間（分）
+    """
+    if holiday_type == "full":
+        body = {
+            "company_id": company_id,
+            "special_holiday_setting_id": special_holiday_setting_id,
+            "special_holiday": 1,
+        }
+        label = "全休"
+
+    elif holiday_type == "half":
+        body = {
+            "company_id": company_id,
+            "special_holiday_setting_id": special_holiday_setting_id,
+            "half_special_holiday_mins": half_special_holiday_mins,
+        }
+        if clock_in_at:
+            body["clock_in_at"] = f"{target_date} {clock_in_at}:00"
+        if clock_out_at:
+            body["clock_out_at"] = f"{target_date} {clock_out_at}:00"
+        label = f"半休（{half_special_holiday_mins}分）"
+
+    elif holiday_type == "hourly":
+        body = {
+            "company_id": company_id,
+            "special_holiday_setting_id": special_holiday_setting_id,
+            "hourly_special_holiday_mins": hourly_special_holiday_mins,
+        }
+        if clock_in_at:
+            body["clock_in_at"] = f"{target_date} {clock_in_at}:00"
+        if clock_out_at:
+            body["clock_out_at"] = f"{target_date} {clock_out_at}:00"
+        h, m = divmod(hourly_special_holiday_mins, 60)
+        label = f"時間休（{h}時間{m}分）"
+
+    else:
+        return f"❌ holiday_type が不正です: '{holiday_type}'（full / half / hourly）"
+
+    if break_mins > 0:
+        body["break_records"] = [{"break_mins": break_mins}]
+
+    try:
+        await hr_put(
+            f"/api/v1/employees/{employee_id}/work_records/{target_date}",
+            body,
+        )
+        return f"✅ {target_date} の特別休暇（{label}）を登録しました"
+    except Exception as e:
+        return f"❌ 登録失敗: {e}"
 
 
 if __name__ == "__main__":
